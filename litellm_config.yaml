@@ -1,0 +1,3 @@
+general_settings:
+  disable_env_credential_login: true
+  store_prompts_in_spend_logs: false
