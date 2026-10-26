@@ -5,7 +5,6 @@ import os
 import re
 import secrets
 import unicodedata
-from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -13,6 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
+from contextlib import asynccontextmanager
 from database import conectar, inicializar_banco
 from phishtank_checker import MAX_URLS_PHISHTANK, consultar_phishtank
 from urlhaus_checker import consultar_urlhaus
@@ -37,7 +37,6 @@ LITELLM_URL = os.getenv(
 )
 LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "")
 LITELLM_MODEL = os.getenv("LITELLM_MODEL", "protege-idoso")
-
 
 TEXTO_SITE_FALSO_EXPLICACAO = (
     "Este link leva a um site falso, usado para roubar dados e senhas."
@@ -74,12 +73,24 @@ CLASSIFICAÇÕES
 
 Na dúvida, use SUSPEITO quando houver algum indício relevante, mas não evidência forte o bastante para POSSIVEL_GOLPE.
 
+E-MAILS NA MENSAGEM
+Por privacidade, a parte antes do "@" é ocultada, e os e-mails aparecem como [EMAIL]@domínio (exemplo: [EMAIL]@gmail.com). Avalie o domínio junto com o contexto:
+- Domínio que imita banco, órgão público ou empresa conhecida, com palavras extras, hífens ou terminação diferente da oficial (exemplo: bradesco-seguro.net), é sinal forte de golpe.
+- E-mail de provedor gratuito (como gmail.com, hotmail.com, outlook.com, yahoo.com, uol.com.br ou bol.com.br) usado em nome de banco, órgão público ou empresa é sinal forte de golpe.
+- Os finais .gov.br, .jus.br, .leg.br, .mp.br e .mil.br são reservados a órgãos públicos.
+- E-mail de provedor gratuito em conversa pessoal não é sinal de golpe.
+- Não afirme que um domínio é falso sem evidência suficiente; na dúvida, use SUSPEITO.
+- Na explicação, não use a palavra "domínio"; diga, por exemplo, "o e-mail não é do banco".
+
 RESPOSTA PARA NOTIFICAÇÕES
 - "explicacao": máximo de 15 palavras.
 - "orientacao": orientação.
 - Explique o principal sinal de risco.
 - Use português brasileiro simples, adequado para pessoas idosas.
 - Evite introduções, justificativas longas e informações redundantes.
+- Nunca copie nem cite trechos da mensagem. Não repita nomes de pessoas, números, valores, códigos, links, e-mails ou marcadores como [LINK] e [EMAIL]. Descreva o sinal de forma geral (exemplo: "pede um código por mensagem", e não o código).
+- Você pode dizer o nome da instituição que a mensagem tenta imitar (exemplo: "finge ser do Bradesco").
+- Não informe números de telefone nem endereços de sites. O aplicativo mostra os canais oficiais.
 
 FORMATO OBRIGATÓRIO
 Responda exclusivamente com um objeto JSON válido, sem Markdown nem texto adicional, contendo exatamente três campos string: "classificacao", "explicacao" e "orientacao".
@@ -235,6 +246,44 @@ def revogar_instalacao(instalacao_id: int) -> bool:
             "Não foi possível revogar a instalação."
         )
 
+MARCADORES_LEGIVEIS = {
+    "[LINK]": "o link",
+    "[CPF]": "o CPF",
+    "[TELEFONE]": "o telefone",
+    "[CHAVE_PIX]": "a chave Pix",
+}
+
+REGEX_EMAIL_SAIDA = re.compile(
+    r"(?:\[EMAIL\]|[A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE
+)
+REGEX_LINK_SAIDA = re.compile(
+    r"https?://\S+|www\.\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|br|net|org|gov|app|xyz)\b\S*",
+    re.IGNORECASE,
+)
+REGEX_NUMERO_LONGO_SAIDA = re.compile(r"\(?\d[\d .()-]{6,}\d")
+
+CORRECOES_DE_TEXTO = [
+    (re.compile(r"\be-mail o e-mail\b"), "e-mail"),
+    (re.compile(r"\b([Oo]) o\b"), r"\1"),
+    (re.compile(r"\b([Aa]) a\b"), r"\1"),
+    (re.compile(r"\bem o\b"), "no"),
+    (re.compile(r"\bem a\b"), "na"),
+    (re.compile(r"\bde o\b"), "do"),
+    (re.compile(r"\bde a\b"), "da"),
+]
+
+
+def limpar_texto_ia(texto: str) -> str:
+    texto = REGEX_EMAIL_SAIDA.sub("o e-mail", texto)
+    texto = REGEX_LINK_SAIDA.sub("o link", texto)
+    texto = REGEX_NUMERO_LONGO_SAIDA.sub("o número", texto)
+    texto = texto.replace("[EMAIL]", "o e-mail")
+    for marcador, legivel in MARCADORES_LEGIVEIS.items():
+        texto = texto.replace(marcador, legivel)
+    for padrao, substituto in CORRECOES_DE_TEXTO:
+        texto = padrao.sub(substituto, texto)
+    return " ".join(texto.split())
+
 
 def interpretar_json(conteudo: str) -> dict:
     conteudo = conteudo.strip()
@@ -278,15 +327,8 @@ def interpretar_json(conteudo: str) -> dict:
     if not isinstance(orientacao, str) or not orientacao.strip():
         raise ValueError("Campo orientacao inválido")
 
-    explicacao = " ".join(explicacao.split())
-    orientacao = " ".join(orientacao.split())
-
-    palavras_explicacao = explicacao.split()
-    palavras_orientacao = orientacao.split()
-
-    explicacao = " ".join(explicacao.split())
-    orientacao = " ".join(orientacao.split())
-
+    explicacao = limpar_texto_ia(explicacao)
+    orientacao = limpar_texto_ia(orientacao)
 
     return {
         "classificacao": classificacao_normalizada,
