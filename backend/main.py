@@ -98,6 +98,15 @@ O campo "classificacao" deve ser exatamente "SEGURO", "SUSPEITO" ou "POSSIVEL_GO
 """.strip()
 
 
+def ip_do_cliente(request: Request) -> str:
+    ip_real = request.headers.get("CF-Connecting-IP", "").strip()
+    return ip_real or get_remote_address(request)
+
+
+def chave_limite_registro(request: Request) -> str:
+    return f"registro:{ip_do_cliente(request)}"
+
+
 def chave_limite_instalacao(request: Request) -> str:
     authorization = request.headers.get("Authorization", "")
     partes = authorization.split(" ", 1)
@@ -112,7 +121,7 @@ def chave_limite_instalacao(request: Request) -> str:
         ).hexdigest()
         return f"instalacao:{token_hash}"
 
-    return f"ip:{get_remote_address(request)}"
+    return f"ip:{ip_do_cliente(request)}"
 
 
 limiter = Limiter(key_func=chave_limite_instalacao)
@@ -135,7 +144,8 @@ def health():
 
 
 @app.post("/instalacoes/registrar")
-@limiter.limit("5/minute", key_func=get_remote_address)
+
+@limiter.limit("5/minute;30/hour", key_func=chave_limite_registro)
 def registrar_instalacao(request: Request):
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -251,6 +261,11 @@ MARCADORES_LEGIVEIS = {
     "[CPF]": "o CPF",
     "[TELEFONE]": "o telefone",
     "[CHAVE_PIX]": "a chave Pix",
+    "[RG]": "o RG",
+    "[CARTAO]": "o cartão",
+    "[AGENCIA]": "a agência",
+    "[CONTA]": "a conta",
+    "[CEP]": "o CEP",
 }
 
 REGEX_EMAIL_SAIDA = re.compile(
