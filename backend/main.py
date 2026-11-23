@@ -18,10 +18,48 @@ from phishtank_checker import MAX_URLS_PHISHTANK, consultar_phishtank
 from urlhaus_checker import consultar_urlhaus
 
 
+INTERVALO_LIMPEZA_SEGUNDOS = 24 * 60 * 60
+
+
+def apagar_instalacoes_inativas() -> int:
+    with conectar() as conexao:
+        with conexao.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM app_installations
+                WHERE COALESCE(last_used_at, created_at)
+                      < NOW() - INTERVAL '3 months'
+                """
+            )
+            return cursor.rowcount
+
+
+async def limpar_instalacoes_periodicamente():
+    while True:
+        try:
+            apagadas = await asyncio.to_thread(apagar_instalacoes_inativas)
+            print(
+                f"Limpeza: {apagadas} instalação(ões) sem uso há 3 meses apagada(s).",
+                flush=True,
+            )
+        except Exception as erro:
+            print(
+                f"Limpeza: falha ao apagar instalações inativas ({type(erro).__name__}).",
+                flush=True,
+            )
+        await asyncio.sleep(INTERVALO_LIMPEZA_SEGUNDOS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     inicializar_banco()
+    tarefa_limpeza = asyncio.create_task(limpar_instalacoes_periodicamente())
     yield
+    tarefa_limpeza.cancel()
+    try:
+        await tarefa_limpeza
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
